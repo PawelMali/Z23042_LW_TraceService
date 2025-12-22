@@ -5,16 +5,17 @@ using System.Threading.Tasks;
 using NetMQ.Sockets;
 using NetMQ;
 using System.IO;
+using Serilog;
 
 namespace TraceService
 {
     public class MessageQueueService
     {
+        private readonly ILogger _logger;
+
         private readonly ConcurrentQueue<String> _messageQueue;
         private readonly SemaphoreSlim _signal;
         private readonly CancellationTokenSource _cts;
-
-        private static readonly Object lockObj = new Object();
 
         public Boolean IsConnected { get; private set; }
 
@@ -26,6 +27,14 @@ namespace TraceService
             _messageQueue = new ConcurrentQueue<String>();
             _signal = new SemaphoreSlim(0);
             _cts = new CancellationTokenSource();
+
+            _logger = new LoggerConfiguration()
+            .WriteTo.File(
+                path: @"C:\Trace\netmqlogs_.txt",
+                rollingInterval: RollingInterval.Day,
+                outputTemplate: "{Timestamp:HH:mm:ss.fff} | {Message:lj}{NewLine}{Exception}"
+            )
+            .CreateLogger();
         }
 
         public void NetMQ_Start()
@@ -80,20 +89,7 @@ namespace TraceService
 
         private void LogEvent(String message)
         {
-            lock (lockObj)
-            {
-                try
-                {
-                    System.IO.Directory.CreateDirectory(@"C:\Trace");
-                    using (StreamWriter writer = new StreamWriter(@"C:\Trace\" + DateTime.Now.ToString("yyyyMMdd") + "_netmqlogs.txt", true))
-                    {
-                        writer.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + " | " + message);
-                    }
-                }
-                catch (Exception)
-                {
-                }
-            }
+            _logger.Information(message);
         }
     }
 }

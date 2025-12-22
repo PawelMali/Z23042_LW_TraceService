@@ -7,14 +7,15 @@ using System.Threading.Tasks;
 using System.Data.SqlClient;
 using Newtonsoft.Json;
 using System.Data;
+using Serilog;
 
 namespace TraceService
 {
     public partial class MainService : ServiceBase
     {
         private List<PLCController> controllers = new List<PLCController>();
-        private readonly String logFilePath = @"C:\Trace\logs.txt";
-        private static readonly Object lockObj = new Object();
+
+        private readonly ILogger _logger;
 
         //Database
         private readonly String DBServer = Environment.GetEnvironmentVariable("DATABASE_SERVER");
@@ -32,6 +33,14 @@ namespace TraceService
         public MainService()
         {
             InitializeComponent();
+
+            _logger = new LoggerConfiguration()
+            .WriteTo.File(
+                path: @"C:\Trace\service_event_.txt",
+                rollingInterval: RollingInterval.Day,
+                outputTemplate: "{Timestamp:HH:mm:ss.fff} | {Message:lj}{NewLine}{Exception}"
+            )
+            .CreateLogger();
         }
 
         protected override void OnStart(String[] args)
@@ -370,10 +379,6 @@ namespace TraceService
                     LogEvent($"{controller.ID} - {controller.Name} error {controller.ErrorCount}: {e.Message}");
                     NetMQ_SendPLCList(controller, "Error");
                     await Task.Delay(2000, token);
-                }
-                finally
-                {
-                    UpdateStatusFile();
                 }
             }
         }
@@ -830,40 +835,7 @@ namespace TraceService
 
         private void LogEvent(String message)
         {
-            lock (lockObj)
-            {
-                try
-                {
-                    System.IO.Directory.CreateDirectory(@"C:\Trace");
-                    using (StreamWriter writer = new StreamWriter(@"C:\Trace\" + DateTime.Now.ToString("yyyyMMdd") + "_event.txt", true))
-                    {
-                        writer.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + " | " + message);
-                    }
-                }
-                catch (Exception)
-                {
-                }
-            }
-        }
-
-        private void UpdateStatusFile()
-        {
-            lock (lockObj)
-            {
-                try
-                {
-                    var statuses = new List<String>();
-                    foreach (var controller in controllers)
-                    {
-                        statuses.Add($"{controller.ID} - {controller.Name},{controller.Type},{controller.IsRunning}");
-                    }
-                    File.WriteAllLines(logFilePath, statuses);
-                }
-                catch (Exception e)
-                {
-                    LogEvent($"Error updating status file: {e.Message}");
-                }
-            }
+            _logger.Information(message);
         }
 
         #endregion LOGS
