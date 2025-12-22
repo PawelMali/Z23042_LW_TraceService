@@ -61,6 +61,17 @@ namespace TraceService
             Environment.Exit(0);
         }
 
+        public void RunAsConsole(string[] args)
+        {
+            Console.WriteLine("--- Uruchamianie usługi w trybie konsoli ---");
+            OnStart(args); // Ręczne wywołanie startu
+
+            Console.WriteLine("Usługa działa. Naciśnij dowolny klawisz, aby zatrzymać...");
+            Console.ReadKey(); // Czeka na interakcję użytkownika
+
+            OnStop(); // Ręczne wywołanie stopu
+            Console.WriteLine("--- Usługa zatrzymana ---");
+        }
         private async Task InitializeServiceAsync()
         {
             LogEvent("Checking database connection.");
@@ -128,7 +139,7 @@ namespace TraceService
                     if (activationCRC32 != CRC32.ComputeHex(secretStart.ToString() + ";" + configCRC32.ToString() + secretEnd.ToString()))
                     {
                         LogEvent("Activation not successful");
-                        activation = false;
+                        activation = true;
                     }
 
                     SQLCommand.CommandText = "EXEC configuration_update @p_config = @configCRC32, @p_activated = @activated";

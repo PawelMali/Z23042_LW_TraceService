@@ -7,16 +7,34 @@ namespace TraceService
 {
     internal static class Program
     {
-        static void Main()
+        // Zmień sygnaturę Main, aby przyjmowała argumenty (opcjonalne, ale dobra praktyka)
+        static void Main(string[] args)
         {
+            // Ładowanie zmiennych środowiskowych (wspólne dla obu trybów)
             Env.Load(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".env"));
 
-            ServiceBase[] ServicesToRun;
-            ServicesToRun = new ServiceBase[]
+            // Utwórz instancję usługi
+            MainService service = new MainService();
+
+            if (Environment.UserInteractive)
             {
-                new MainService()
-            };
-            ServiceBase.Run(ServicesToRun);
+                // ==========================================
+                // TRYB DEBUGOWANIA (Uruchomienie w Visual Studio)
+                // ==========================================
+                service.RunAsConsole(args);
+            }
+            else
+            {
+                // ==========================================
+                // TRYB USŁUGI (Normalne działanie w tle)
+                // ==========================================
+                ServiceBase[] ServicesToRun;
+                ServicesToRun = new ServiceBase[]
+                {
+                    service
+                };
+                ServiceBase.Run(ServicesToRun);
+            }
         }
     }
 }
