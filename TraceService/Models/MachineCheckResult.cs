@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using TraceService.Enums;
 
 namespace TraceService.Models
 {
@@ -13,5 +14,7 @@ namespace TraceService.Models
         public bool IsFound { get; set; }
         public bool IsOld { get; set; }
         public bool IsScrap => Result == 4;
+
+        public TraceErrorStatus ErrorStatus { get; set; } = TraceErrorStatus.Ok;
     }
 }

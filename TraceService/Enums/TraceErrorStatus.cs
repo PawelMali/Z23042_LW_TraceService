@@ -18,10 +18,10 @@ namespace TraceService.Enums
         NokDetected = 51,           // Znaleziono status 2 NOK
         PreviousMachineNotFound = 52, // Nie znaleziono w ogóle w bazie
         PreviousMachineOldData = 53,  // Dane zbyt stare (limit dni)
-        StatusMissing = 55,         // Dane zbyt stare (limit dni)
+        StatusMissing = 55,         // Nie wpisany status (brak statusu = 0)
 
         DatabaseSaveError = 70,     // Błąd zapisu do bazy
-        DatabaseCheckError = 71,     // Błąd sprawdzenia w bazy
+        //DatabaseCheckError = 71,     // Błąd sprawdzenia w bazy
 
         OtherError = 99             // Inne błędy
     }

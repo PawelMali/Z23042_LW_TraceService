@@ -18,6 +18,9 @@ namespace TraceService
 
         override public String ToString()
         {
+            if (len < 0) len = 0;
+            if (len > data.Length) len = data.Length;
+
             return ASCIIEncoding.ASCII.GetString(data, 0, len);
         }
 

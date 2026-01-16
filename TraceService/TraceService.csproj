@@ -15,7 +15,7 @@
     <NuGetPackageImportStamp>
     </NuGetPackageImportStamp>
     <IsWebBootstrapper>false</IsWebBootstrapper>
-    <PublishUrl>C:\PZ\TraceServicePub\</PublishUrl>
+    <PublishUrl>C:\PZ\TraceService\</PublishUrl>
     <Install>true</Install>
     <InstallFrom>Disk</InstallFrom>
     <UpdateEnabled>false</UpdateEnabled>
@@ -25,7 +25,7 @@
     <UpdatePeriodically>false</UpdatePeriodically>
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
-    <ApplicationRevision>8</ApplicationRevision>
+    <ApplicationRevision>9</ApplicationRevision>
     <ApplicationVersion>1.1.0.%2a</ApplicationVersion>
     <UseApplicationTrust>false</UseApplicationTrust>
     <PublishWizardCompleted>true</PublishWizardCompleted>
@@ -286,8 +286,11 @@
   <ItemGroup>
     <Compile Include="ABDTL.cs" />
     <Compile Include="ABString.cs" />
+    <Compile Include="Controlers\AllenBradleyPlcDriver.cs" />
+    <Compile Include="Controlers\SiemensPlcDriver.cs" />
     <Compile Include="CRC32.cs" />
     <Compile Include="Enums\TraceErrorStatus.cs" />
+    <Compile Include="Interfaces\IPlcDriver.cs" />
     <Compile Include="Interfaces\ITraceRepository.cs" />
     <Compile Include="MessageQueueService.cs" />
     <Compile Include="MainService.cs">
@@ -297,7 +300,9 @@
       <DependentUpon>MainService.cs</DependentUpon>
     </Compile>
     <Compile Include="Models\MachineCheckResult.cs" />
+    <Compile Include="Models\PlcControlState.cs" />
     <Compile Include="Models\RemoteMachineConfigModel.cs" />
+    <Compile Include="Models\TraceDiagnostics.cs" />
     <Compile Include="Models\TraceLogModel.cs" />
     <Compile Include="PLCController.cs" />
     <Compile Include="Program.cs" />
@@ -334,7 +339,7 @@
   <ItemGroup>
     <BootstrapperPackage Include=".NETFramework,Version=v4.7.2">
       <Visible>False</Visible>
-      <ProductName>Microsoft .NET Framework 4.7.2 %28x86 i x64%29</ProductName>
+      <ProductName>Microsoft .NET Framework 4.7.2 %28x86 and x64%29</ProductName>
       <Install>true</Install>
     </BootstrapperPackage>
     <BootstrapperPackage Include="Microsoft.Net.Framework.3.5.SP1">

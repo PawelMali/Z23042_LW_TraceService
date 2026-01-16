@@ -13,10 +13,11 @@ namespace TraceService.Controlers
     public class SqlTraceRepository : ITraceRepository
     {
         private readonly string _connectionString;
+        private static readonly int SQL_TIMEOUT_SECONDS = 3;
 
         public SqlTraceRepository(string server, string port, string database, string user, string password)
         {
-            _connectionString = $"Data source={server},{port};Initial Catalog={database};User ID={user};Password={password};";
+            _connectionString = $"Data source={server},{port};Initial Catalog={database};User ID={user};Password={password};Connect Timeout={SQL_TIMEOUT_SECONDS};";
         }
 
         public void SaveLog(TraceLogModel log)
@@ -69,38 +70,83 @@ namespace TraceService.Controlers
             using (var conn = new SqlConnection(_connectionString))
             {
                 conn.Open();
-                using (var cmd = conn.CreateCommand())
+                // 1. Sprawdzenie SCRAP dla DMC 1
+                if (!string.IsNullOrEmpty(dmc1))
                 {
-                    cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE ((dmc_code1 = @p1 AND LEN(dmc_code1) > 0) OR (dmc_code2 = @p2 AND LEN(dmc_code2) > 0)) AND (operation_result1 = 4 OR operation_result2 = 4)";
-                    cmd.Parameters.Add("@p1", SqlDbType.VarChar, 256).Value = dmc1 ?? "";
-                    cmd.Parameters.Add("@p2", SqlDbType.VarChar, 256).Value = dmc2 ?? "";
-            
-                    using (var reader = cmd.ExecuteReader())
+                    using (SqlCommand cmd = conn.CreateCommand())
                     {
-                        return reader.Read();
+                        // Szukamy statusu 4 (Scrap) w wynikach operacji
+                        // Indeks IX_Logs_DmcCode1_Results ma te kolumny w INCLUDE, więc to będzie błyskawiczne
+                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code1 = @p1 AND (operation_result1 = 4 OR operation_result2 = 4)";
+                        cmd.Parameters.Add("@p1", SqlDbType.VarChar, 256).Value = dmc1;
+
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            if (reader.Read()) return true; // Znaleziono Scrap -> koniec, zwracamy true
+                        }
                     }
                 }
+
+                // 2. Sprawdzenie SCRAP dla DMC 2 (tylko jeśli DMC 1 było czyste/nieznalezione)
+                if (!string.IsNullOrEmpty(dmc2))
+                {
+                    using (SqlCommand cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code2 = @p2 AND (operation_result1 = 4 OR operation_result2 = 4)";
+                        cmd.Parameters.Add("@p2", SqlDbType.VarChar, 256).Value = dmc2;
+
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            if (reader.Read()) return true;
+                        }
+                    }
+                }
+
+                return false;
             }
         }
 
         public bool IsDmcProcessed(int machineId, string dmc1, string dmc2)
         {
-            // Implementacja logiki CheckOnlyOnce
             using (SqlConnection connection = new SqlConnection(_connectionString))
             {
                 connection.Open();
-                using (SqlCommand cmd = connection.CreateCommand())
-                {
-                    cmd.CommandText = "SELECT TOP(1) machine_id FROM dbo.logs WHERE machine_id = @mId AND ((dmc_code1 = @p1 AND LEN(dmc_code1) > 0) OR (dmc_code2 = @p2 AND LEN(dmc_code2) > 0)) ORDER BY id DESC";
-                    cmd.Parameters.Add("@mId", SqlDbType.Int).Value = machineId;
-                    cmd.Parameters.Add("@p1", SqlDbType.VarChar, 256).Value = dmc1 ?? "";
-                    cmd.Parameters.Add("@p2", SqlDbType.VarChar, 256).Value = dmc2 ?? "";
 
-                    using (var reader = cmd.ExecuteReader())
+                // 1. Sprawdzenie DMC 1
+                if (!string.IsNullOrEmpty(dmc1))
+                {
+                    using (SqlCommand cmd = connection.CreateCommand())
                     {
-                        return reader.Read();
+                        // To zapytanie idealnie trafi w indeks: IX_Logs_DmcCode1_Results
+                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code1 = @p1 AND machine_id = @mId";
+                        cmd.Parameters.Add("@mId", SqlDbType.Int).Value = machineId;
+                        cmd.Parameters.Add("@p1", SqlDbType.VarChar, 256).Value = dmc1;
+
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            if (reader.Read()) return true; // Znaleziono -> koniec
+                        }
                     }
                 }
+
+                // 2. Sprawdzenie DMC 2 (tylko jeśli DMC1 nie dało wyniku)
+                if (!string.IsNullOrEmpty(dmc2))
+                {
+                    using (SqlCommand cmd = connection.CreateCommand())
+                    {
+                        // To zapytanie idealnie trafi w indeks: IX_Logs_DmcCode2_Results
+                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code2 = @p2 AND machine_id = @mId";
+                        cmd.Parameters.Add("@mId", SqlDbType.Int).Value = machineId;
+                        cmd.Parameters.Add("@p2", SqlDbType.VarChar, 256).Value = dmc2;
+
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            if (reader.Read()) return true;
+                        }
+                    }
+                }
+
+                return false;
             }
         }
 
