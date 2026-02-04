@@ -20,6 +20,8 @@ namespace TraceService.Enums
         PreviousMachineOldData = 53,  // Dane zbyt stare (limit dni)
         StatusMissing = 55,         // Nie wpisany status (brak statusu = 0)
 
+        MaxProcessingsExceeded = 56,     //Przetworzono maksymalną ilość razy.
+
         DatabaseSaveError = 70,     // Błąd zapisu do bazy
         //DatabaseCheckError = 71,     // Błąd sprawdzenia w bazy
 

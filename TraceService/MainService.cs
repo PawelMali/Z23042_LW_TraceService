@@ -1,4 +1,5 @@
 ﻿using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Serilog;
 using System;
 using System.Collections.Generic;
@@ -32,6 +33,8 @@ namespace TraceService
         private readonly MessageQueueService messageQueueService = new MessageQueueService();
         private readonly ILogger _logger;
 
+        private CancellationTokenSource _cancellationTokenSource;
+
         public MainService()
         {
             InitializeComponent();
@@ -41,6 +44,7 @@ namespace TraceService
                 .WriteTo.File(
                     path: @"C:\Trace\Service\service_event_.txt",
                     rollingInterval: RollingInterval.Day,
+                    retainedFileCountLimit: 60,
                     outputTemplate: "{Timestamp:HH:mm:ss.fff} | {Message:lj}{NewLine}{Exception}"
                 )
                 .CreateLogger();
@@ -48,13 +52,21 @@ namespace TraceService
 
         protected override void OnStart(String[] args)
         {
-            _logger.Information("Service Starting... Version: v2.0 - 2025.12.29 (Refactored)");
+            _logger.Information("Service Starting... Version: v2.01 - 2026.01.22 (Refactored)");
 
             messageQueueService.NetMQ_Start();
-            Task.Run(() => messageQueueService.StartProcessingQueue());
+            //Task.Run(() => messageQueueService.StartProcessingQueue());
+
+            // 1. Tworzymy nowe źródło tokena (resetujemy pilota)
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            // 2. Pobieramy sam token
+            var token = _cancellationTokenSource.Token;
 
             // Uruchomienie inicjalizacji w tle
-            Task.Run(() => InitializeServiceAsync());
+            // Używamy Task.Run, aby OnStart mógł się zakończyć i oddać sterowanie systemowi,
+            // podczas gdy InitializeServiceAsync będzie pracować w tle.
+            Task.Run(() => InitializeServiceAsync(token), token);
         }
 
         protected override void OnStop()
@@ -63,8 +75,16 @@ namespace TraceService
             {
                 _logger.Information("Service stopping...");
 
-                // 1. Zatrzymujemy NetMQ (żeby nie przyjmował nowych danych)
-                messageQueueService.NetMQ_Stop();
+                if (_cancellationTokenSource != null)
+                {
+                    _cancellationTokenSource.Cancel();
+                }
+
+                // 1. Zatrzymanie NetMQ
+                if (messageQueueService != null)
+                {
+                    messageQueueService.NetMQ_Stop();
+                }
 
                 // 2. Zatrzymujemy Kontrolery RÓWNOLEGLE
                 // Wcześniej pętla foreach zatrzymywała je jeden po drugim. 
@@ -98,6 +118,11 @@ namespace TraceService
             {
                 // 3. Na samym końcu zamykamy logger
                 Log.CloseAndFlush();
+                Task.Run(async () =>
+                {
+                    await Task.Delay(1000); // Czekamy, aż SCM (Windows) ogarnie status
+                    Environment.Exit(0);    // Brutalne sprzątanie bibliotek ASComm/NetMQ
+                });
             }
 
         }
@@ -114,10 +139,10 @@ namespace TraceService
             Console.WriteLine("--- Usługa zatrzymana ---");
         }
 
-        private async Task InitializeServiceAsync()
+        private async Task InitializeServiceAsync(CancellationToken token)
         {
             _logger.Information("Checking database connection...");
-            Boolean isConnected = await CheckDatabaseConnectionAsync();
+            Boolean isConnected = await CheckDatabaseConnectionAsync(token);
 
             if (!isConnected)
             {
@@ -146,7 +171,8 @@ namespace TraceService
                                 machines.id_previous_machine_1, machines.max_days_number_1, machines.check_secondary_code_1, 
                                 machines.id_previous_machine_2, machines.max_days_number_2, machines.check_secondary_code_2, 
                                 machines.id_previous_machine_3, machines.max_days_number_3, machines.check_secondary_code_3, 
-                                lines.database_ip, lines.database_login, lines.database_password 
+                                lines.database_ip, lines.database_login, lines.database_password,
+                                machines.passivation_active, machines.passivation_max_days
                             FROM dbo.machines
                             LEFT JOIN dbo.lines ON lines.id = machines.id_line
                             WHERE machines.plc_ip IS NOT NULL AND LEN(machines.plc_ip) > 0 
@@ -159,6 +185,20 @@ namespace TraceService
                             while (await SQLreader.ReadAsync())
                             {
                                 String plcIP = SQLreader.IsDBNull(2) ? null : SQLreader.GetString(2).Trim();
+
+                                // --- POPRAWKA: Walidacja IP przed utworzeniem obiektu ---
+                                if (string.IsNullOrWhiteSpace(plcIP))
+                                {
+                                    _logger.Warning($"Skipping machine ID {SQLreader[0]} due to empty IP address.");
+                                    continue; // Pomijamy tę maszynę i idziemy do następnej
+                                }
+                                // Opcjonalnie: Prosta walidacja formatu (czy ma kropki)
+                                if (plcIP.Split('.').Length < 4)
+                                {
+                                    _logger.Warning($"Skipping machine ID {SQLreader[0]}: Invalid IP format '{plcIP}'.");
+                                    continue;
+                                }
+
                                 Byte plcType = SQLreader.IsDBNull(3) ? (Byte)1 : SQLreader.GetByte(3);
                                 configString += $"{plcIP}:{plcType};";
 
@@ -201,6 +241,8 @@ namespace TraceService
                                     SQLreader.IsDBNull(6) ? "" : SQLreader.GetString(6).Trim(), // ResultDB / Tag
                                     SQLreader.IsDBNull(7) ? (Byte)1 : SQLreader.GetByte(7), // NumParams
                                     SQLreader.IsDBNull(8) ? false : SQLreader.GetBoolean(8), // CheckOnce
+                                    SQLreader.IsDBNull(21) ? false : SQLreader.GetBoolean(21), // CheckMaxProcessings (sql -passivation_active)
+                                    SQLreader.IsDBNull(22) ? (Int16)0 : SQLreader.GetInt16(22), // CheckMaxProcessings (sql -passivation_max_days)
                                     pm1, pm2, pm3,
                                     // Credentials do bazy lokalnej (gdzie zapisujemy logi)
                                     DBLocalServer, DBLocalPort, DBLocalDatabase, DBLocalUser, DBLocalPassword
@@ -269,30 +311,46 @@ namespace TraceService
             }
         }
 
-        private async Task<Boolean> CheckDatabaseConnectionAsync()
+        private async Task<Boolean> CheckDatabaseConnectionAsync(CancellationToken token)
         {
-            int retries = 0;
-            while (retries < 10)
+            _logger.Information("Checking local database connection...");
+
+            while (!token.IsCancellationRequested)
             {
                 try
                 {
-                    using (SqlConnection connection = new SqlConnection($"Data source={DBLocalServer},{DBLocalPort};Initial Catalog={DBLocalDatabase};User ID={DBLocalUser};Password={DBLocalPassword};"))
+                    // Używamy Connection Timeout w stringu, żeby nie czekać domyślnych 30s na próbę, tylko np. 5s
+                    // To sprawia, że pętla jest bardziej responsywna
+                    var connStr = $"Data source={DBLocalServer},{DBLocalPort};Initial Catalog={DBLocalDatabase};User ID={DBLocalUser};Password={DBLocalPassword};Connect Timeout=5;";
+
+                    using (SqlConnection connection = new SqlConnection(connStr))
                     {
-                        await connection.OpenAsync();
+                        await connection.OpenAsync(token);
+                        _logger.Information("Database connection established.");
                         return true;
                     }
                 }
-                catch (SqlException)
+                catch (SqlException ex)
                 {
-                    _logger.Warning("Database connection failed. Retrying in 5s...");
-                    await Task.Delay(5000);
-                    retries++;
+                    _logger.Warning($"Database connection failed (SQL Error: {ex.Number}). Retrying in 15s... Service is waiting.");
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error(ex, "Unexpected DB Error");
-                    return false;
+                    _logger.Error(ex, "Unexpected DB Error during connection check.");
                 }
+
+                // OCZEKIWANIE (DELAY):
+        // To jest kluczowe dla poprawnego zatrzymywania usługi.
+        // Jeśli podczas tych 15 sekund klikniesz STOP, Delay rzuci OperationCanceledException i wyjdziemy z pętli.
+        try
+        {
+            await Task.Delay(15000, token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Usługa się zatrzymuje - wychodzimy z pętli
+            break;
+        }
             }
             return false;
         }

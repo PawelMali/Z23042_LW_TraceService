@@ -15,6 +15,7 @@ namespace TraceService.Interfaces
         // Weryfikacja
         bool IsDmcProcessed(int machineId, string dmc1, string dmc2);
         bool IsScrapDetected(string dmc1, string dmc2);
+        int GetDmcProcessingCount(int machineId, string dmc1, string dmc2);
 
         // Metody do obsługi "Poprzedniej Maszyny"
         // Zwraca dane do połączenia z inną maszyną (IP, Login, Hasło)

@@ -38,6 +38,8 @@ namespace TraceService.Controlers
         // Volatile nie jest konieczne przy jednym wątku kontrolera, ale bezpieczniej przy dostępie z Eventów
         private volatile bool _isConnected;
         public bool IsConnected => _isConnected;
+        private int _consecutiveFailures = 0;       // Licznik aktualnych błędów pod rząd
+        private const int FailureThreshold = 5;     // Ile błędów musi wystąpić, żeby uznać awarię połaczenia (np. 5)
 
         // --- POLA DO SMART LOGGINGU ---
         private bool _isInErrorState = false; // Czy jesteśmy w trybie awarii?
@@ -163,6 +165,11 @@ namespace TraceService.Controlers
             }
             catch (Exception ex)
             {
+                // --- WYMUSZENIE BŁĘDU NATYCHMIASTOWEGO ---
+                // Ponieważ Connect() wołamy rzadko (co kilka sekund), 
+                // nie chcemy filtrować tego błędu. Chcemy od razu wejść w tryb awarii.
+                _consecutiveFailures = FailureThreshold;
+
                 // Tutaj wpadną te ChannelException, ale teraz będą obsłużone
                 // przez naszą logikę Smart Logging (nie będą spamować, jeśli to ten sam błąd)
                 HandleError(ex, "Connect Validation");
@@ -193,8 +200,6 @@ namespace TraceService.Controlers
             catch (Exception ex)
             {
                 HandleError(ex, "WriteLifeBit");
-                // Błąd zapisu zwykle oznacza zerwanie połączenia
-                _isConnected = false;
             }
         }
 
@@ -218,7 +223,6 @@ namespace TraceService.Controlers
             catch (Exception ex)
             {
                 HandleError(ex, "ReadControlState");
-                _isConnected = false;
                 return new PlcControlState();
             }
         }
@@ -239,7 +243,6 @@ namespace TraceService.Controlers
             catch (Exception ex)
             {
                 HandleError(ex, "WriteStatus");
-                _isConnected = false;
             }
         }
 
@@ -266,7 +269,6 @@ namespace TraceService.Controlers
             catch (Exception ex)
             {
                 HandleError(ex, "ReadTraceData");
-                _isConnected = false;
                 throw;
             }
         }
@@ -275,6 +277,22 @@ namespace TraceService.Controlers
 
         private void HandleError(Exception ex, string context)
         {
+            _consecutiveFailures++;
+
+            // Jeśli to tylko "czkawka" (mniej niż 5 błędów pod rząd) i nie jesteśmy już w trybie awarii
+            if (!_isInErrorState && _consecutiveFailures < FailureThreshold)
+            {
+                // Opcjonalnie: Logowanie poziomu Debug, żeby nie śmiecić w głównym logu
+                _logger.Debug($"Transient Error #{_consecutiveFailures} in {context}: {ex.Message}");
+
+                // WAŻNE: Nie zmieniamy _isConnected! Dajemy szansę w kolejnym cyklu.
+                return;
+            }
+
+            // --- PONIŻEJ TYLKO PRAWDZIWA AWARIA (Próg przekroczony LUB już trwająca awaria) ---
+            _isConnected = false;
+
+
             _lastErrorTime = DateTime.Now; // Zawsze aktualizujemy czas ostatniego błędu (dla stabilności)
             string errorMsg = ex.Message;
 
@@ -315,11 +333,15 @@ namespace TraceService.Controlers
         private void HandleAsyncError(string source, string message)
         {
             HandleError(new Exception(message), $"{source} Event");
-            _isConnected = false;
+            //_isConnected = false;
         }
 
         private void ReportSuccess()
         {
+            // 1. ZAWSZE zerujemy licznik błędów przy sukcesie.
+            // Dzięki temu pojedyncze "glitche" nie sumują się w czasie.
+            _consecutiveFailures = 0;
+
             // Jeśli nie było awarii, nie robimy nic
             if (!_isInErrorState) return;
 

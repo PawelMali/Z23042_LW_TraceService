@@ -31,6 +31,8 @@ namespace TraceService
         // Pola biznesowe
         public Byte NumbersOfParameters { get; private set; }
         public Boolean CheckOnlyOnce { get; private set; }
+        public Boolean CheckMaxProcessings { get; private set; }  // Dodane pole do kontroli maksymalnej liczby przetworzeń (w bazie danych zastąpiło pasywację - opcja passivation_active)
+        public Int16 MaxProcessingsLimit { get; private set; }  // Dodane pole do kontroli maksymalnej liczby przetworzeń (w bazie danych zastąpiło pasywację - passivation_max_days)
         public TemplatePreviousMachine PreviousMachine1 { get; private set; }
         public TemplatePreviousMachine PreviousMachine2 { get; private set; }
         public TemplatePreviousMachine PreviousMachine3 { get; private set; }
@@ -53,8 +55,8 @@ namespace TraceService
             ILogger globalLogger, // Można przekazać globalny lub stworzyć wewnątrz
             MessageQueueService mqService, // Wstrzykujemy kolejkę mqtt
             String id, String name, String ip, Byte type,
-            String dbread, String dbwrite, String dbresult,
-            Byte numbersofparameters, Boolean checkonlyonce,
+            String dbread, String dbwrite, String dbresult, 
+            Byte numbersofparameters, Boolean checkonlyonce, Boolean checkmaxprocessings, Int16 maxprocessingslimit,
             TemplatePreviousMachine previousmachine1, TemplatePreviousMachine previousmachine2, TemplatePreviousMachine previousmachine3,
             String dbLocalServer, String dbLocalPort, String dbLocalDb, String dbLocalUser, String dbLocalPass)
         {
@@ -64,6 +66,9 @@ namespace TraceService
             IP = ip;
             NumbersOfParameters = numbersofparameters;
             CheckOnlyOnce = checkonlyonce;
+            CheckMaxProcessings = checkmaxprocessings;
+            MaxProcessingsLimit = maxprocessingslimit;
+
             PreviousMachine1 = previousmachine1;
             PreviousMachine2 = previousmachine2;
             PreviousMachine3 = previousmachine3;
@@ -80,6 +85,7 @@ namespace TraceService
                 .WriteTo.File(
                     path: $@"C:\Trace\{ID}\{ID}_log_.txt",
                     rollingInterval: RollingInterval.Day,
+                    retainedFileCountLimit: 60,
                     outputTemplate: "{Timestamp:HH:mm:ss.fff} | {Message:lj}{NewLine}{Exception}",
                     shared: true
                 )
@@ -117,23 +123,57 @@ namespace TraceService
         {
             if (!IsRunning) return;
 
-            IsRunning = false;
             _logger.Information("STOP PLC PROCESS");
-            ProcessTokenSource.Cancel();
+            IsRunning = false;
+
+            // 1. Sygnał do pętli: "Kończ pracę"
+            if (ProcessTokenSource != null && !ProcessTokenSource.IsCancellationRequested)
+            {
+                ProcessTokenSource.Cancel();
+            }
+
             try
             {
-                ProcessTask.Wait(TimeSpan.FromSeconds(5));
+                // 2. Czekamy na wątek
+                if (ProcessTask != null && !ProcessTask.IsCompleted)
+                {
+                    // WAŻNE: Dajemy wątkowi max 3 sekundy na wyjście z pętli.
+                    // Jeśli sterownik wisi na 'Read()', to prawdopodobnie nie zdąży wyjść.
+                    bool finishedInTime = ProcessTask.Wait(TimeSpan.FromSeconds(3));
+
+                    if (!finishedInTime)
+                    {
+                        // WAŻNE: Jeśli wątek nie skończył, NIE próbujemy na siłę robić Dispose sterownika!
+                        // Próba zamknięcia socketa, na którym wisi inny wątek, to gwarantowany Deadlock.
+                        // Po prostu logujemy i wychodzimy. System ubije ten wątek przy zamknięciu procesu.
+                        _logger.Warning($"Controller {ID} task is stuck (likely IO timeout). Abandoning task to allow service stop.");
+                        return;
+                    }
+                }
+
+                // 3. Jeśli wątek skończył pracę kulturalnie -> Sprzątamy
+                // (Tylko w tym przypadku bezpiecznie jest wołać Dispose)
+                if (_driver != null)
+                {
+                    _driver.Disconnect();
+                    _driver.Dispose();
+                }
             }
             catch (Exception ex)
             {
-                _logger.Error($"Error stopping task: {ex.Message}");
+                _logger.Error($"Error stopping controller {ID}: {ex.Message}");
             }
+            finally
+            {
+                try
+                {
+                    ProcessTokenSource?.Dispose();
+                    // ProcessTask?.Dispose(); // Taska lepiej nie diposować jeśli może jeszcze żyć w tle
+                }
+                catch { }
 
-            _driver.Disconnect();
-            _driver.Dispose();
-
-            try { ProcessTask.Dispose(); } 
-            catch { }
+                _logger.Information($"Controller {ID} stopped.");
+            }
         }
 
         public void SendStatus(string status)
@@ -311,7 +351,23 @@ namespace TraceService
                     isScrap = diag.Measure("IsScrapDetected", () => _repository.IsScrapDetected(dmc1, dmc2));
                     if (isScrap) return diag.SetResult(2, TraceErrorStatus.ScrapDetected);
 
-                    // 2. CheckOnlyOnce - sprawdzenie czy już był
+                    // 2.2 CheckOnlyOnce - sprawdzenie czy już był OK
+                    if (CheckMaxProcessings)
+                    {
+                        // Pobieramy liczbę dotychczasowych prób
+                        int currentCount = diag.Measure("GetProcessingCount", () =>
+                            _repository.GetDmcProcessingCount(int.Parse(ID), dmc1, dmc2));
+
+                        // Jeśli liczba prób >= limit, blokujemy
+                        // Np. Limit = 3. Jeśli znaleźliśmy 3 wpisy, to jest to 4. próba -> BLOKADA.
+                        if (currentCount >= MaxProcessingsLimit)
+                        {
+                            _logger.Warning($"Max Processings Exceeded for {dmc1}/{dmc2}. Count: {currentCount}, Limit: {MaxProcessingsLimit}");
+                            return diag.SetResult(2, TraceErrorStatus.MaxProcessingsExceeded);
+                        }
+                    }
+
+                    // 2.2 CheckOnlyOnce - sprawdzenie czy już był OK
                     if (CheckOnlyOnce)
                     {
                         isProcessed = diag.Measure("IsDmcProcessed", () => _repository.IsDmcProcessed(int.Parse(ID), dmc1, dmc2));
@@ -409,10 +465,7 @@ namespace TraceService
 
                 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
                 SqlTraceRepository remoteRepo;
-                if (machine.MachineID == 50)
-                    remoteRepo = new SqlTraceRepository(targetIp, _dbLocalPort, "TRACE_BACKUP_EK0", targetUser, targetPass);
-                else
-                    remoteRepo = new SqlTraceRepository(targetIp, _dbLocalPort, _dbLocalDb, targetUser, targetPass);
+                remoteRepo = new SqlTraceRepository(targetIp, _dbLocalPort, _dbLocalDb, targetUser, targetPass);
                 //var remoteRepo = new SqlTraceRepository(targetIp, _dbLocalPort, _dbLocalDb, targetUser, targetPass);
 
 
@@ -476,7 +529,7 @@ namespace TraceService
 
                     readData = readStruct,
                     writeData = writeStruct,
-                    resultData = resultObject 
+                    resultData = resultObject
                 };
 
                 string json = JsonConvert.SerializeObject(msg, Formatting.None);

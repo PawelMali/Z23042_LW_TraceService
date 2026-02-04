@@ -77,7 +77,7 @@ namespace TraceService.Controlers
                     {
                         // Szukamy statusu 4 (Scrap) w wynikach operacji
                         // Indeks IX_Logs_DmcCode1_Results ma te kolumny w INCLUDE, więc to będzie błyskawiczne
-                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code1 = @p1 AND (operation_result1 = 4 OR operation_result2 = 4)";
+                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code1 = @p1 AND operation_result1 = 4";
                         cmd.Parameters.Add("@p1", SqlDbType.VarChar, 256).Value = dmc1;
 
                         using (var reader = cmd.ExecuteReader())
@@ -92,7 +92,7 @@ namespace TraceService.Controlers
                 {
                     using (SqlCommand cmd = conn.CreateCommand())
                     {
-                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code2 = @p2 AND (operation_result1 = 4 OR operation_result2 = 4)";
+                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code2 = @p2 AND operation_result1 = 4";
                         cmd.Parameters.Add("@p2", SqlDbType.VarChar, 256).Value = dmc2;
 
                         using (var reader = cmd.ExecuteReader())
@@ -118,7 +118,7 @@ namespace TraceService.Controlers
                     using (SqlCommand cmd = connection.CreateCommand())
                     {
                         // To zapytanie idealnie trafi w indeks: IX_Logs_DmcCode1_Results
-                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code1 = @p1 AND machine_id = @mId";
+                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code1 = @p1 AND machine_id = @mId AND operation_result1 IN (1, 3)";
                         cmd.Parameters.Add("@mId", SqlDbType.Int).Value = machineId;
                         cmd.Parameters.Add("@p1", SqlDbType.VarChar, 256).Value = dmc1;
 
@@ -135,7 +135,7 @@ namespace TraceService.Controlers
                     using (SqlCommand cmd = connection.CreateCommand())
                     {
                         // To zapytanie idealnie trafi w indeks: IX_Logs_DmcCode2_Results
-                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code2 = @p2 AND machine_id = @mId";
+                        cmd.CommandText = "SELECT TOP(1) 1 FROM dbo.logs WHERE dmc_code2 = @p2 AND machine_id = @mId AND operation_result1 IN (1, 3)";
                         cmd.Parameters.Add("@mId", SqlDbType.Int).Value = machineId;
                         cmd.Parameters.Add("@p2", SqlDbType.VarChar, 256).Value = dmc2;
 
@@ -147,6 +147,45 @@ namespace TraceService.Controlers
                 }
 
                 return false;
+            }
+        }
+
+        public int GetDmcProcessingCount(int machineId, string dmc1, string dmc2)
+        {
+            using (SqlConnection connection = new SqlConnection(_connectionString))
+            {
+                connection.Open();
+                int totalCount = 0;
+
+                // 1. Zliczanie wystąpień DMC 1 na tej maszynie
+                if (!string.IsNullOrEmpty(dmc1))
+                {
+                    using (SqlCommand cmd = connection.CreateCommand())
+                    {
+                        // Użycie indeksu IX_Logs_DmcCode1_Results
+                        cmd.CommandText = "SELECT COUNT(*) FROM dbo.logs WHERE dmc_code1 = @p1 AND machine_id = @mId";
+                        cmd.Parameters.Add("@mId", SqlDbType.Int).Value = machineId;
+                        cmd.Parameters.Add("@p1", SqlDbType.VarChar, 256).Value = dmc1;
+
+                        totalCount += (int)cmd.ExecuteScalar();
+                    }
+                }
+
+                // 2. Zliczanie wystąpień DMC 2 na tej maszynie
+                if (!string.IsNullOrEmpty(dmc2))
+                {
+                    using (SqlCommand cmd = connection.CreateCommand())
+                    {
+                        // Użycie indeksu IX_Logs_DmcCode2_Results
+                        cmd.CommandText = "SELECT COUNT(*) FROM dbo.logs WHERE dmc_code2 = @p2 AND machine_id = @mId";
+                        cmd.Parameters.Add("@mId", SqlDbType.Int).Value = machineId;
+                        cmd.Parameters.Add("@p2", SqlDbType.VarChar, 256).Value = dmc2;
+
+                        totalCount += (int)cmd.ExecuteScalar();
+                    }
+                }
+
+                return totalCount;
             }
         }
 
@@ -193,7 +232,7 @@ namespace TraceService.Controlers
                         : "dmc_code1 = @p1";
 
                     // UWAGA: Usunęliśmy warunek daty z SQL. Pobieramy po prostu ostatni wpis.
-                    cmd.CommandText = $@"SELECT TOP(1) operation_result1, operation_result2, operation_datetime2 
+                    cmd.CommandText = $@"SELECT TOP(1) operation_result1, operation_datetime2 
                                  FROM dbo.logs 
                                  WHERE machine_id = @mId AND {dmcCondition} 
                                  ORDER BY id DESC"; // Zawsze bierzemy najnowszy
@@ -208,17 +247,9 @@ namespace TraceService.Controlers
                         if (reader.Read())
                         {
                             int res1 = reader.IsDBNull(0) ? 0 : reader.GetInt32(0);
-                            int res2 = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
-                            DateTime date = reader.IsDBNull(2) ? DateTime.MinValue : reader.GetDateTime(2);
+                            DateTime date = reader.IsDBNull(1) ? DateTime.MinValue : reader.GetDateTime(1);
 
-                            // Agregacja wyniku (zgodnie z logiką: 2 jest ważniejsze niż 1, ale bierzemy z operacji 2 jeśli jest nowsza/ważniejsza)
-                            // Zakładam prostą logikę: jeśli gdziekolwiek jest 2 to NOK, jeśli nie to bierzemy result2 chyba że pusty.
-                            // (Tu zachowujemy oryginalną logikę wyboru wyniku)
-                            int finalResult = res1;
-                            if (res1 == 2 || res2 == 2) finalResult = 2;
-                            else if (res2 > res1) finalResult = res2; // Np. res1=1 (start), res2=1 (koniec) -> 1
-
-                            return (finalResult, date);
+                            return (res1, date);
                         }
                     }
                 }
